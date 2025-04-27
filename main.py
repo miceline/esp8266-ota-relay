@@ -6,25 +6,45 @@ import os
 import ujson
 
 # ---- CONFIGURATION ----
-LOG_SERVER_IP = '192.168.x.x'  # <-- Your PC IP for UDP logs
-LOG_SERVER_PORT = 12345
 UPLOAD_FILENAME = 'main.py'
 WIFI_FILE = 'wifi.json'
+UDP_FILE = 'udp.json'
 RELAY_PIN = 13
 
+# ---- GLOBALS ----
+log_socket = None
+network_ready = False
+udp_ip = None
+udp_port = None
+
 # ---- LOGGING ----
-try:
-    log_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    network_ready = True
-except:
-    log_socket = None
-    network_ready = False
+def load_udp_config():
+    global udp_ip, udp_port
+    try:
+        with open(UDP_FILE, 'r') as f:
+            data = ujson.load(f)
+            udp_ip = data['ip']
+            udp_port = int(data['port'])
+            log(f"Loaded UDP config: {udp_ip}:{udp_port}")
+    except Exception as e:
+        print(f"Failed to load UDP config: {e}")
+        udp_ip = None
+        udp_port = None
+
+def setup_log_socket():
+    global log_socket, network_ready
+    try:
+        log_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        network_ready = True
+    except:
+        log_socket = None
+        network_ready = False
 
 def log(message):
     try:
-        if network_ready and log_socket:
+        if network_ready and log_socket and udp_ip and udp_port:
             print(f"[sending log] {message}")
-            log_socket.sendto((message + '\n').encode('utf-8'), (LOG_SERVER_IP, LOG_SERVER_PORT))
+            log_socket.sendto((message + '\n').encode('utf-8'), (udp_ip, udp_port))
         else:
             print(message)
     except Exception as e:
@@ -35,7 +55,7 @@ def log(message):
 relay = machine.Pin(RELAY_PIN, machine.Pin.OUT)
 relay.value(0)
 
-# ---- Wi-Fi Functions ----
+# ---- WIFI FUNCTIONS ----
 def save_wifi_credentials(ssid, password):
     data = {"ssid": ssid, "password": password}
     with open(WIFI_FILE, 'w') as f:
@@ -67,6 +87,7 @@ def connect_wifi():
     if wlan.isconnected():
         log(f'Connected to WiFi: {wlan.ifconfig()}')
 
+        # Disable Access Point if WiFi connected
         ap = network.WLAN(network.AP_IF)
         if ap.active():
             ap.active(False)
@@ -124,6 +145,8 @@ def start_http_server(port=8080):
                     handle_relay(cl_file, cl, content_length)
                 elif path == '/setup_wifi':
                     handle_setup_wifi(cl_file, cl, content_length)
+                elif path == '/setup_udp':
+                    handle_setup_udp(cl_file, cl, content_length)
                 else:
                     send_response(cl, 404, "Invalid Path")
             else:
@@ -178,6 +201,27 @@ def handle_setup_wifi(cl_file, cl, content_length):
         log(f"WiFi setup error: {e}")
         send_response(cl, 400, "Invalid JSON format.")
 
+def handle_setup_udp(cl_file, cl, content_length):
+    log("Handling /setup_udp...")
+    body = cl_file.read(content_length)
+    try:
+        data = ujson.loads(body)
+        ip = data.get('ip')
+        port = data.get('port')
+        if ip and port:
+            data = {"ip": ip, "port": int(port)}
+            with open(UDP_FILE, 'w') as f:
+                ujson.dump(data, f)
+            send_response(cl, 200, "UDP config saved. Rebooting...")
+            log('UDP config saved. Rebooting...')
+            time.sleep(2)
+            machine.reset()
+        else:
+            send_response(cl, 400, "Invalid UDP setup data.")
+    except Exception as e:
+        log(f"UDP setup error: {e}")
+        send_response(cl, 400, "Invalid JSON format.")
+
 # ---- LOW-LEVEL HELPERS ----
 def send_response(cl, status_code, message):
     response_body = message
@@ -204,10 +248,14 @@ def safe_close(cl):
     except:
         pass
 
-# ---- MAIN ----
+# ---- MAIN EXECUTION ----
 
 log("Booting device...")
 time.sleep(1)
+
+# Load UDP config first (even before WiFi)
+load_udp_config()
+setup_log_socket()
 
 if not connect_wifi():
     log("Failed to connect WiFi. Starting AP mode...")
