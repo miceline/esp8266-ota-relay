@@ -21,8 +21,7 @@ def load_settings():
         with open('wifi.json') as f:
             creds = ujson.load(f)
             if hardware.connect_wifi(creds['ssid'], creds['password']):
-                logging_util.log("Home wifi connected")
-                logging_util.log(hardware.sync_time())
+                hardware.start_mdns()
             else:
                 hardware.start_ap()
     except:

@@ -9,7 +9,20 @@ UDP_SERVER_PORT ?= 12345
 
 # Target to upload the Python file
 upload:
-	curl --progress-bar --output /dev/null -X POST --data-binary "@$(FILE)" http://$(DEVICE_IP):$(DEVICE_PORT)/upload
+	@echo "Uploading all .py files to ESP at $(DEVICE_IP)..."
+	@for file in *.py; do \
+		echo "Uploading $$file..."; \
+		curl --progress-bar --max-time 10 -X POST --data-binary "@$$file" "http://$(DEVICE_IP):$(DEVICE_PORT)/upload?filename=$$file"; \
+	done
+	@echo "✅ All files uploaded! ESP will reboot."
+	@$(MAKE) reboot_device
+	@sleep 3
+	@echo "Waiting for ESP to reboot..."
+	@while ! ping -c 1 $(DEVICE_IP) > /dev/null 2>&1; do \
+		echo "Waiting for ESP to reboot..."; \
+		sleep 1; \
+	done
+	@echo "ESP is back online!"
 
 log:
 	@echo "Listening for logs on UDP port 12345..."
