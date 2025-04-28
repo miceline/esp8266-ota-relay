@@ -6,19 +6,37 @@ import ntptime
 from machine import ADC
 
 TIMEZONE_OFFSET_HOURS = -4 # Aruba
-relay = machine.Pin(13, machine.Pin.OUT)
+relay = machine.Pin(16, machine.Pin.OUT)
+relay.value(0)
 adc = ADC(0)
+
+relay_timeout_minutes = 5
+relay_timer_end = None 
 
 boot_time = time.time()
 
 def relay_on():
+    global relay_timer_end
     relay.value(1)
+    relay_timer_end = time.time() + relay_timeout_minutes * 60
 
 def relay_off():
+    global relay_timer_end
     relay.value(0)
+    relay_timer_end = None
 
 def relay_status():
     return "on" if relay.value() else "off"
+
+def check_relay_timer():
+    global relay_timer_end
+    if relay_timer_end and time.time() >= relay_timer_end:
+        print("Relay auto-off timeout reached.")
+        relay_off()
+
+def set_relay_timeout(minutes):
+    global relay_timeout_minutes
+    relay_timeout_minutes = minutes
 
 def read_pressure():
     raw_value = adc.read()
@@ -68,10 +86,18 @@ def get_status():
 
     uptime = time.time() - boot_time
 
+    if relay_timer_end:
+        seconds_left = int(relay_timer_end - time.time())
+        if seconds_left < 0:
+            seconds_left = 0
+    else:
+        seconds_left = 0
+
     return {
         "ip": ip,
         "time": date_str,
         "uptime_seconds": int(uptime),
         "wifi_connected": wlan.isconnected(),
-        "relay_status": relay_status()
+        "relay_status": relay_status(),
+        "relay_auto_off_seconds_left": seconds_left,
     }

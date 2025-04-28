@@ -45,6 +45,7 @@ def main_loop():
             pass
 
         serial_cli.handle_serial()
+        hardware.check_relay_timer()
 
 logging_util.log("Booting device...")
 time.sleep(1)

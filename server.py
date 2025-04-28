@@ -4,6 +4,8 @@ import machine
 import hardware
 import logging_util
 import time
+import hashlib
+import ubinascii
 
 def parse_query(path):
     if '?' not in path:
@@ -38,7 +40,8 @@ def handle_client(cl):
     if method == 'POST':
         if path == '/upload':
             filename = params.get('filename', 'main.py')
-            upload_file(cl_file, cl, content_length, filename)
+            checksum = params.get('checksum')
+            upload_file(cl_file, cl, content_length, filename, checksum)
         elif path == '/relay':
             relay_control(cl_file, cl, content_length)
         elif path == '/setup_wifi':
@@ -69,22 +72,49 @@ def serve_status(cl):
     body = ujson.dumps(status)
     send_response(cl, 200, body)
 
-def upload_file(cl_file, cl, content_length, filename):
-    logging_util.log(f"Uploading {filename}...")
+def calc_sha1(data):
+    h = hashlib.sha1()
+    h.update(data)
+    return ubinascii.hexlify(h.digest()).decode()
+
+def upload_file(cl_file, cl, content_length, filename, expected_checksum):
+    logging_util.log(f"Uploading {filename} with checksum {expected_checksum}...")
+
     try:
+        data = b''
+        remaining = content_length
+        while remaining > 0:
+            chunk_size = 512
+            if remaining < chunk_size:
+                chunk_size = remaining
+            chunk = cl_file.read(chunk_size)
+            if not chunk:
+                break
+            data += chunk
+            remaining -= len(chunk)
+
+        # calculate hash of file to match with checksum
+        sha1 = hashlib.sha1()
+        sha1.update(data)
+        actual_checksum = ubinascii.hexlify(sha1.digest()).decode()
+
+        if expected_checksum is None:
+            send_response(cl, 400, "Missing checksum parameter.")
+            logging_util.log("Upload rejected: no checksum provided.")
+            return
+
+        if actual_checksum != expected_checksum:
+            send_response(cl, 400, "Checksum mismatch. Upload rejected.")
+            logging_util.log(f"Upload rejected: checksum mismatch ({actual_checksum} != {expected_checksum})")
+            return
+
+        # If checksum OK → save the file
         with open(filename, 'w') as f:
-            remaining = content_length
-            while remaining > 0:
-                chunk_size = 512
-                if remaining < chunk_size:
-                    chunk_size = remaining
-                chunk = cl_file.read(chunk_size)
-                if not chunk:
-                    break
-                f.write(chunk.decode('utf-8'))
-                remaining -= len(chunk)
+            f.write(data.decode('utf-8'))
+
         send_response(cl, 200, "Upload successful.")
-        logging_util.log(f"{filename} uploaded.")
+        logging_util.log(f"{filename} uploaded and verified.")
+
     except Exception as e:
         logging_util.log(f"Upload error: {e}")
         send_response(cl, 500, "Upload failed.")
@@ -92,11 +122,22 @@ def upload_file(cl_file, cl, content_length, filename):
 def relay_control(cl_file, cl, content_length):
     body = cl_file.read(content_length)
     command = body.decode('utf-8').strip().lower()
-    if command == 'on':
+    if command.startswith('on'):
+
+        parts = command.split(':')
+        if len(parts) == 2:
+            try:
+                timeout_minutes = int(parts[1])
+                hardware.set_relay_timeout(timeout_minutes)
+                logging_util.log(f"Relay timeout set to {timeout_minutes} minutes.")
+            except:
+                logging_util.log("Invalid timeout value. Using default.")
         hardware.relay_on()
+        logging_util.log("Relay turned ON.")
         send_response(cl, 200, "Relay turned ON.")
     elif command == 'off':
         hardware.relay_off()
+        logging_util.log("Relay turned OFF.")
         send_response(cl, 200, "Relay turned OFF.")
     else:
         send_response(cl, 400, "Invalid relay command.")
